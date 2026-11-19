@@ -643,7 +643,7 @@ const PreviewModal = ({ projectData, onClose, onGeneratePDF, onGenerateDoc, isGe
         </div>
         <div className="bg-white p-4 border-t flex flex-wrap justify-end gap-3 shrink-0">
           <button onClick={onGenerateDoc} disabled={isGeneratingDoc} className="px-5 py-2.5 bg-blue-700 hover:bg-blue-800 text-white rounded-lg font-bold flex items-center text-sm shadow">
-            {isGeneratingDoc ? <Loader2 className="animate-spin mr-2" size={18} /> : <FileText className="mr-2" size={18} />} 下載 Word 檔 (.doc)
+            {isGeneratingDoc ? <Loader2 className="animate-spin mr-2" size={18} /> : <FileText className="mr-2" size={18} />} 下載 Word 檔 (.docx)
           </button>
           <button onClick={onGeneratePDF} disabled={isGeneratingPdf} className="px-5 py-2.5 bg-red-700 hover:bg-red-800 text-white rounded-lg font-bold flex items-center text-sm shadow">
             {isGeneratingPdf ? <Loader2 className="animate-spin mr-2" size={18} /> : <Download className="mr-2" size={18} />} 下載 PDF 檔 (.pdf)
@@ -1031,7 +1031,8 @@ export default function App() {
   };
 
   // --- Word 匯出：支援一頁 1 張或一頁 2 張圖，透過 Canvas 預先控制像素高寬，確保單頁圖文完整呈現絕不溢頁或裁切 ---
-  const processImageForWord = (photoObj, maxW = 580, maxH = 310) => {
+  // pixelRatio：輸出圖檔的實際像素倍率（版面尺寸不變，只讓照片在 Word 中更清晰）；預設 1 與舊版相同
+  const processImageForWord = (photoObj, maxW = 580, maxH = 310, pixelRatio = 1) => {
     return new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
@@ -1044,16 +1045,18 @@ export default function App() {
         const ratio = Math.min(targetMaxW / w, targetMaxH / h, 1);
         const finalW = Math.max(1, Math.round(w * ratio));
         const finalH = Math.max(1, Math.round(h * ratio));
+        // 實際像素不超過原圖，避免無意義放大
+        const pr = Math.max(1, Math.min(pixelRatio, w / finalW, h / finalH));
 
         const canvas = document.createElement('canvas');
-        canvas.width = finalW;
-        canvas.height = finalH;
+        canvas.width = Math.round(finalW * pr);
+        canvas.height = Math.round(finalH * pr);
         const ctx = canvas.getContext('2d');
         ctx.fillStyle = '#FFFFFF';
-        ctx.fillRect(0, 0, finalW, finalH);
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(img, 0, 0, finalW, finalH);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
         resolve({
           dataUrl: canvas.toDataURL('image/jpeg', 0.92),
@@ -1068,49 +1071,95 @@ export default function App() {
     });
   };
 
+  // --- Word 匯出（.docx 正規格式）：照片以獨立圖檔嵌入，手機、Mac、Google 文件皆可正常顯示 ---
   const generateDoc = async (criteriaIdsArray = null, customFileName = null) => {
     setIsGeneratingDoc(true);
     try {
+      const {
+        Document, Packer, Paragraph, TextRun, ImageRun, Table, TableRow, TableCell,
+        AlignmentType, BorderStyle, ShadingType, WidthType, VerticalAlign, PageBreak
+      } = await import('docx');
+
       const targetIds = criteriaIdsArray || (activeCriterionId ? [activeCriterionId] : ALL_CRITERIA_IDS);
       const selectedSet = new Set(targetIds);
       const exportTitle = schoolName && schoolName.trim() ? schoolName.trim() : "高雄市立OO國小/國中資優評鑑報告";
       const downloadName = customFileName || exportTitle;
 
-      let bodyContent = `<div class="Section1">`;
-      bodyContent += `<div style="text-align:center; border-bottom:3pt solid #111827; padding-bottom:8pt; margin-bottom:16pt;">
-        <h1 style="font-size:22pt; font-weight:bold; margin:0; color:#000000;">${exportTitle}</h1>
-      </div>`;
+      const FONT = { ascii: "Microsoft JhengHei", eastAsia: "Microsoft JhengHei", hAnsi: "Microsoft JhengHei" };
+      const pt = (n) => Math.round(n * 2); // 字級：docx 以半點為單位
+      const NONE = { style: BorderStyle.NONE, size: 0, color: "FFFFFF" };
+      const noBorders = { top: NONE, bottom: NONE, left: NONE, right: NONE, insideHorizontal: NONE, insideVertical: NONE };
+      const line = (sizePt, color) => ({ style: BorderStyle.SINGLE, size: Math.round(sizePt * 8), color, space: 4 });
+      const shade = (fill) => ({ type: ShadingType.CLEAR, color: "auto", fill });
+
+      // 多行文字轉成 TextRun（保留換行）
+      const multiline = (text, opts = {}) =>
+        String(text).split('\n').map((t, i) => new TextRun({ text: t, ...(i > 0 ? { break: 1 } : {}), font: FONT, ...opts }));
+
+      const dataUrlToBytes = (dataUrl) => {
+        const [meta, b64] = String(dataUrl).split(',');
+        const bin = atob(b64 || '');
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const type = /image\/png/i.test(meta) ? 'png' : /image\/gif/i.test(meta) ? 'gif' : /image\/bmp/i.test(meta) ? 'bmp' : 'jpg';
+        return { bytes, type };
+      };
+
+      const children = [];
+
+      // 報告標題
+      children.push(new Paragraph({
+        alignment: AlignmentType.CENTER,
+        border: { bottom: line(3, "111827") },
+        spacing: { after: 320 },
+        children: [new TextRun({ text: exportTitle, bold: true, size: pt(22), font: FONT })]
+      }));
 
       // 壹、文字執行情形區塊
       EVALUATION_DATA.forEach(dim => {
         const hasInds = dim.indicators.some(ind => ind.criteria.some(c => selectedSet.has(c.id)));
         if (!hasInds) return;
 
-        bodyContent += `<div style="background-color:#E5E7EB; border-left:6pt solid #1F2937; padding:6pt 10pt; margin-top:12pt; margin-bottom:10pt;">
-          <span style="font-size:15pt; font-weight:bold; color:#000000;">${dim.title}</span>
-        </div>`;
+        children.push(new Paragraph({
+          shading: shade("E5E7EB"),
+          border: { left: { style: BorderStyle.SINGLE, size: 48, color: "1F2937", space: 8 } },
+          spacing: { before: 240, after: 200 },
+          children: [new TextRun({ text: dim.title, bold: true, size: pt(15), font: FONT })]
+        }));
 
         dim.indicators.forEach(ind => {
-          const relevantCriteria = ind.criteria.filter(c => selectedSet.has(c.id));
-          if (relevantCriteria.length === 0) return;
-
-          relevantCriteria.forEach(crit => {
-            const desc = (evidenceData[crit.id]?.description || "（尚無說明文字）").replace(/\n/g, '<br/>');
-            bodyContent += `<div style="margin-bottom:14pt; page-break-inside:avoid;">
-              <div style="font-size:13pt; font-weight:bold; color:#000000; margin-bottom:6pt;">${crit.title}</div>
-              <table width="100%" cellpadding="10" cellspacing="0" style="border-collapse:collapse; background-color:#F3F4F6; border-left:4pt solid #4B5563;">
-                <tr>
-                  <td style="font-size:11.5pt; line-height:1.6; color:#000000;">
-                    <b>【執行情形】：</b><br/>${desc}
-                  </td>
-                </tr>
-              </table>
-            </div>`;
+          ind.criteria.filter(c => selectedSet.has(c.id)).forEach(crit => {
+            const desc = evidenceData[crit.id]?.description || "（尚無說明文字）";
+            children.push(new Paragraph({
+              keepNext: true,
+              spacing: { after: 120 },
+              children: [new TextRun({ text: crit.title, bold: true, size: pt(13), font: FONT })]
+            }));
+            children.push(new Table({
+              width: { size: 100, type: WidthType.PERCENTAGE },
+              borders: { ...noBorders, left: { style: BorderStyle.SINGLE, size: 32, color: "4B5563" } },
+              rows: [new TableRow({
+                cantSplit: false,
+                children: [new TableCell({
+                  shading: shade("F3F4F6"),
+                  margins: { top: 200, bottom: 200, left: 200, right: 200 },
+                  children: [new Paragraph({
+                    spacing: { line: 384 },
+                    children: [
+                      new TextRun({ text: "【執行情形】：", bold: true, size: pt(11.5), font: FONT }),
+                      new TextRun({ text: "", break: 1 }),
+                      ...multiline(desc, { size: pt(11.5) })
+                    ]
+                  })]
+                })]
+              })]
+            }));
+            children.push(new Paragraph({ spacing: { after: 160 }, children: [] }));
           });
         });
       });
 
-      // 貳、相關佐證資料區塊 (支援逐圖混排「一頁 1 張」與「一頁 2 張」，嚴格控制像素高寬確保單頁不跨頁、不裁切)
+      // 貳、相關佐證資料區塊（沿用一頁 1 張／2 張的分頁規則與安全高度計算）
       let isFirstChunk = true;
 
       for (const dim of EVALUATION_DATA) {
@@ -1129,16 +1178,18 @@ export default function App() {
               const isOnePerPageMode = pageObj.layoutMode === 1;
               const isSingleItemOnPage = chunk.length === 1;
 
-              // Word 標準分頁符號
-              bodyContent += `<br clear="all" style="page-break-before:always; mso-break-type:section-break" />`;
+              // 分頁
+              children.push(new Paragraph({ children: [new PageBreak()] }));
 
               if (isFirstChunk) {
-                bodyContent += `<div style="text-align:center; border-bottom:3pt solid #111827; padding-bottom:6pt; margin-bottom:8pt;">
-                  <h1 style="font-size:20pt; font-weight:bold; margin:0; color:#000000;">貳、相關佐證資料</h1>
-                </div>`;
+                children.push(new Paragraph({
+                  alignment: AlignmentType.CENTER,
+                  border: { bottom: line(3, "111827") },
+                  spacing: { after: 160 },
+                  children: [new TextRun({ text: "貳、相關佐證資料", bold: true, size: pt(20), font: FONT })]
+                }));
               }
 
-              // 嚴格計算該頁每張圖片的最大安全像素高度，確保圖片＋圖說＋標題 100% 容納於單一 A4 頁面內
               let baseMaxImgH;
               if (isOnePerPageMode) {
                 baseMaxImgH = isFirstChunk ? 530 : 605;
@@ -1149,88 +1200,101 @@ export default function App() {
               }
               isFirstChunk = false;
 
-              bodyContent += `<div style="border-bottom:1.5pt solid #6B7280; padding-bottom:3pt; margin-bottom:8pt;">
-                <span style="font-size:13pt; font-weight:bold; color:#000000;">
-                  ${CRITERIA_MAP[crit.id]?.shortCode || crit.id} 佐證資料 ${pageIndex > 0 ? `(續${pageIndex})` : ''}
-                </span>
-              </div>`;
+              children.push(new Paragraph({
+                border: { bottom: line(1.5, "6B7280") },
+                spacing: { after: 160 },
+                keepNext: true,
+                children: [new TextRun({
+                  text: `${CRITERIA_MAP[crit.id]?.shortCode || crit.id} 佐證資料 ${pageIndex > 0 ? `(續${pageIndex})` : ''}`.trim(),
+                  bold: true, size: pt(13), font: FONT
+                })]
+              }));
 
               const totalCaptionsLen = chunk.reduce((acc, cur) => acc + (cur.caption ? cur.caption.length : 0), 0);
 
               for (let i = 0; i < chunk.length; i++) {
                 const photo = chunk[i];
-                const globalIdx = photo.globalIdx;
                 const capLen = (photo.caption || "").length;
                 const capPenalty = isSingleItemOnPage
                   ? (capLen > 50 ? Math.min(90, Math.floor((capLen - 50) * 0.6)) : 0)
                   : (totalCaptionsLen > 70 ? Math.min(55, Math.floor((totalCaptionsLen - 70) * 0.3)) : 0);
                 const safeMaxH = Math.max(170, baseMaxImgH - capPenalty);
 
-                const processed = await processImageForWord(photo, 600, safeMaxH);
-                const captionText = (photo.caption || "（無照片說明）").replace(/\n/g, '<br/>');
+                const processed = await processImageForWord(photo, 600, safeMaxH, 2);
+                const { bytes, type } = dataUrlToBytes(processed.dataUrl);
+                const capSize = (isOnePerPageMode || isSingleItemOnPage) ? pt(11) : pt(10);
+                const cellBorder = { style: BorderStyle.SINGLE, size: 8, color: "D1D5DB" };
 
-                bodyContent += `<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse; border:1pt solid #D1D5DB; margin-bottom:8pt; page-break-inside:avoid;">
-                  <tr>
-                    <td align="center" valign="middle" style="background-color:#F9FAFB; padding:5pt; border-bottom:1pt solid #D1D5DB;">
-                      <img src="${processed.dataUrl}" width="${processed.width}" height="${processed.height}" style="display:block; margin:0 auto;" />
-                    </td>
-                  </tr>
-                  <tr>
-                    <td style="background-color:#F3F4F6; padding:5pt 9pt; font-size:${(isOnePerPageMode || isSingleItemOnPage) ? '11pt' : '10pt'}; font-weight:bold; color:#000000; line-height:1.35;">
-                      圖 ${globalIdx + 1}：${captionText}
-                    </td>
-                  </tr>
-                </table>`;
+                children.push(new Table({
+                  width: { size: 100, type: WidthType.PERCENTAGE },
+                  borders: { top: cellBorder, bottom: cellBorder, left: cellBorder, right: cellBorder, insideHorizontal: cellBorder, insideVertical: NONE },
+                  rows: [
+                    new TableRow({
+                      cantSplit: true,
+                      children: [new TableCell({
+                        shading: shade("F9FAFB"),
+                        verticalAlign: VerticalAlign.CENTER,
+                        margins: { top: 100, bottom: 100, left: 100, right: 100 },
+                        children: [new Paragraph({
+                          alignment: AlignmentType.CENTER,
+                          keepNext: true,
+                          children: [new ImageRun({
+                            type,
+                            data: bytes,
+                            transformation: { width: processed.width, height: processed.height }
+                          })]
+                        })]
+                      })]
+                    }),
+                    new TableRow({
+                      cantSplit: true,
+                      children: [new TableCell({
+                        shading: shade("F3F4F6"),
+                        margins: { top: 100, bottom: 100, left: 180, right: 180 },
+                        children: [new Paragraph({
+                          children: [
+                            new TextRun({ text: `圖 ${photo.globalIdx + 1}：`, bold: true, size: capSize, font: FONT }),
+                            ...multiline(photo.caption || "（無照片說明）", { bold: true, size: capSize })
+                          ]
+                        })]
+                      })]
+                    })
+                  ]
+                }));
+                children.push(new Paragraph({ spacing: { after: 160 }, children: [] }));
               }
             }
           }
         }
       }
 
-      bodyContent += `</div>`;
+      const doc = new Document({
+        title: downloadName,
+        creator: "特教評鑑（資優類）總儀表板排版系統",
+        styles: { default: { document: { run: { font: FONT, size: pt(11.5) } } } },
+        sections: [{
+          properties: {
+            page: {
+              size: { width: 11906, height: 16838 }, // A4
+              margin: { top: 680, bottom: 680, left: 680, right: 680, header: 567, footer: 567 } // 12mm
+            }
+          },
+          children
+        }]
+      });
 
-      const wordHtml = `<html xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
-<head>
-<meta charset="utf-8">
-<title>${downloadName}</title>
-<!--[if gte mso 9]>
-<xml>
-  <w:WordDocument>
-    <w:View>Print</w:View>
-    <w:Zoom>100</w:Zoom>
-    <w:DoNotOptimizeForBrowser/>
-  </w:WordDocument>
-</xml>
-<![endif]-->
-<style>
-  @page Section1 {
-    size: 210mm 297mm;
-    margin: 12mm 12mm 12mm 12mm;
-    mso-header-margin: 10mm;
-    mso-footer-margin: 10mm;
-  }
-  div.Section1 { page: Section1; }
-  body { font-family: "Microsoft JhengHei", "PMingLiU", sans-serif; color: #000000; margin: 0; padding: 0; }
-  table { mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
-  tr { page-break-inside: avoid; }
-  img { border: 0; }
-</style>
-</head>
-<body>${bodyContent}</body>
-</html>`;
-
-      const blob = new Blob(['\ufeff', wordHtml], { type: 'application/msword' });
+      const blob = await Packer.toBlob(doc);
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `${downloadName}.doc`;
+      link.download = `${downloadName}.docx`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-      showToast("已成功下載 Word 檔 (.doc)！");
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      showToast("已成功下載 Word 檔 (.docx)！");
     } catch (e) {
-      console.error("DOC generation failed", e);
+      console.error("DOCX generation failed", e);
       showToast("Word 檔案生成失敗");
     } finally {
       setIsGeneratingDoc(false);
@@ -2014,7 +2078,7 @@ export default function App() {
                   className="px-4 py-2 bg-blue-700 hover:bg-blue-800 text-white rounded-lg font-bold text-xs md:text-sm flex items-center gap-1.5 shadow"
                 >
                   {isGeneratingDoc ? <Loader2 className="animate-spin" size={16} /> : <FileText size={16} />}
-                  下載此效標 Word (.doc)
+                  下載此效標 Word (.docx)
                 </button>
                 <button
                   onClick={() => generatePDF('pdf-content', `${filePrefix}.pdf`)}
