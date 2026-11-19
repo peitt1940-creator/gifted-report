@@ -85,7 +85,7 @@ const EVALUATION_DATA = [
             id: "crt2-1-1",
             title: "效標 2-1-1：學校依學生特殊需求透過團隊合作討論訂定 IGP。",
             checklists: [
-              "訂定 IGP 之簽到表、會議紀錄等（每班至少 2 份、每班每位教師至少 1 份為原則）。",
+              "訂定 IGP 之簽到表、會議紀錄等（每班每位教師至少 1 份為原則）。",
               "邀請家長（法定代理人/實際照顧者）及學生本人參與。"
             ]
           }
@@ -99,14 +99,14 @@ const EVALUATION_DATA = [
             id: "crt2-2-1",
             title: "效標 2-2-1：IGP 應於開學前訂定，新生及轉學生應於入學後一個月內訂定初步 IGP，且 IGP 每學期至少檢討一次。",
             checklists: [
-              "訂定及檢討 IGP 之簽到表、會議紀錄等（每班至少 2 份、每班每位教師至少 1 份為原則）。"
+              "訂定及檢討 IGP 之簽到表、會議紀錄等（每班每位教師至少 1 份為原則）。"
             ]
           },
           {
             id: "crt2-2-2",
             title: "效標 2-2-2：每位特殊教育學生均有 IGP，且內容項目符合《特殊教育法施行細則》第 13 條規定。",
             checklists: [
-              "呈現完整 IGP，內容項目符合特殊教育法施行細則第 13 條規定等（每班至少 2 份、每班每位教師至少 1 份為原則）。"
+              "呈現完整 IGP，內容項目符合特殊教育法施行細則第 13 條規定等（每班每位教師至少 1 份為原則）。"
             ]
           },
           {
@@ -2104,6 +2104,22 @@ export default function App() {
           renderDashboard()
         )}
       </main>
+
+      <footer className="print:hidden border-t border-gray-200 bg-white mt-10">
+        <div className="max-w-6xl mx-auto px-4 py-6 flex flex-col items-center gap-2 text-center">
+          <a
+            href="https://www.spec.kh.edu.tw/modules/tad_uploader/index.php?of_cat_sn=667"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 bg-gray-900 hover:bg-black text-white px-5 py-2.5 rounded-xl text-sm font-bold shadow-sm transition"
+          >
+            <FileText size={16} /> 查看自評表原文（高雄市特殊教育資訊網）
+          </a>
+          <p className="text-xs text-gray-500">
+            資優類請下載「附件4-資優自評（定稿）」。本工具的指標文字以原文為準。
+          </p>
+        </div>
+      </footer>
     </div>
   );
 }
